@@ -1,0 +1,86 @@
+name: Build SmolLM3-3B GGUF
+
+on:
+  workflow_dispatch:   # запуск вручную из вкладки Actions
+  push:
+    paths:
+      - ".github/workflows/smollm3-gguf.yml"
+
+jobs:
+  build-gguf:
+    runs-on: ubuntu-latest
+
+    env:
+      HF_MODEL_ID: "HuggingFaceTB/SmolLM3-3B"
+      GGUF_OUT_BASE: "SmolLM3-3B"
+      # можешь поменять тип квантизации на Q5_K_M, Q8_0 и т.п.
+      QUANT_TYPE: "Q4_K_M"
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git build-essential python3 python3-pip
+
+      - name: Clone llama.cpp
+        run: |
+          git clone https://github.com/ggerganov/llama.cpp.git
+          cd llama.cpp
+          # быстрый билд, чтоб был бинарник quantize (для квантизации)
+          make quantize -j$(nproc)
+
+      - name: Create models dir
+        run: mkdir -p models
+
+      - name: Install huggingface_hub
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install "huggingface_hub>=0.25.0"
+
+      - name: Download SmolLM3-3B from Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}   # опционально, если нужна аутентификация
+        run: |
+          python3 - << 'PYCODE'
+          from huggingface_hub import snapshot_download
+          import os
+
+          model_id = os.environ["HF_MODEL_ID"]
+          local_dir = "models/SmolLM3-3B"
+          snapshot_download(
+              repo_id=model_id,
+              local_dir=local_dir,
+              local_dir_use_symlinks=False,
+              resume_download=True,
+          )
+          print("Downloaded", model_id, "to", local_dir)
+          PYCODE
+
+      - name: Convert HF model to GGUF (F16)
+        run: |
+          cd llama.cpp
+          python3 convert-hf-to-gguf.py \
+            --model-path ../models/SmolLM3-3B \
+            --outfile ../models/${GGUF_OUT_BASE}-F16.gguf \
+            --outtype f16
+
+      - name: Quantize to ${{ env.QUANT_TYPE }}
+        run: |
+          cd llama.cpp
+          ./quantize ../models/${GGUF_OUT_BASE}-F16.gguf \
+                     ../models/${GGUF_OUT_BASE}-${QUANT_TYPE}.gguf \
+                     ${QUANT_TYPE}
+
+      - name: List resulting files
+        run: |
+          ls -lh models
+
+      - name: Upload GGUF as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: SmolLM3-3B-${{ env.QUANT_TYPE }}-GGUF
+          path: models/*.gguf
+          if-no-files-found: error
