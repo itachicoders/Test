@@ -12,7 +12,6 @@ jobs:
       MODEL_DIR: "models/Qwen3.5-9B-Abliterated"
       GGUF_OUT_BASE: "Qwen3.5-9B-Abliterated"
       QUANT_TYPE: "Q4_K_M"
-      LOCAL_PIPS: "${{ github.workspace }}/models/pip_packages"
 
     steps:
       - name: Checkout repo
@@ -21,8 +20,8 @@ jobs:
       - name: Maximize build space
         uses: easimon/maximize-build-space@v10
         with:
-          root-reserve-mb: 1024 # Оставим чуть больше места системе для маневра
-          swap-size-mb: 2048    # Увеличим своп, чтобы RAM не вылетела при конвертации
+          root-reserve-mb: 2048 # Увеличим запас для системных либ
+          swap-size-mb: 2048
           remove-dotnet: 'true'
           remove-android: 'true'
           remove-haskell: 'true'
@@ -35,50 +34,46 @@ jobs:
           cmake -S llama.cpp -B llama.cpp/build \
             -DCMAKE_BUILD_TYPE=Release \
             -DBUILD_SHARED_LIBS=OFF \
-            -DLLAMA_BUILD_TESTS=OFF \
-            -DLLAMA_BUILD_EXAMPLES=OFF \
-            -DLLAMA_BUILD_SERVER=OFF \
             -DLLAMA_BUILD_TOOLS=ON
           cmake --build llama.cpp/build --config Release -j"$(nproc)"
 
       - name: Create models dir
-        run: mkdir -p models/pip_packages models/pip_tmp
+        run: mkdir -p models/tmp
 
-      - name: Install Python deps (Isolated)
+      - name: Install Python deps (Fix Tokenizer)
         run: |
-          export TMPDIR="${{ github.workspace }}/models/pip_tmp"
-          # Ставим всё только в нашу папку, не обновляя системный pip
-          python3 -m pip install --target="${{ env.LOCAL_PIPS }}" \
-            torch --index-url https://download.pytorch.org/whl/cpu
+          # Направляем временные файлы на большой диск
+          export TMPDIR="${{ github.workspace }}/models/tmp"
           
-          python3 -m pip install --target="${{ env.LOCAL_PIPS }}" \
-            -r llama.cpp/requirements.txt
-            
-          python3 -m pip install --target="${{ env.LOCAL_PIPS }}" \
-            "huggingface_hub>=0.25.0"
+          # Устанавливаем зависимости без кэша прямо в систему, 
+          # места должно хватить после удаления лишнего софта экшеном
+          python3 -m pip install --no-cache-dir --upgrade pip
+          python3 -m pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+          
+          # Явно ставим необходимые версии для корректного импорта токенизаторов
+          python3 -m pip install --no-cache-dir transformers tokenizers huggingface_hub gguf
+          
+          # Доставляем остатки из реквайрментов llama.cpp
+          python3 -m pip install --no-cache-dir -r llama.cpp/requirements.txt
 
       - name: Download Model from Hugging Face
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
-          export PYTHONPATH="${{ env.LOCAL_PIPS }}"
           python3 - <<'PYCODE'
           import os
           from huggingface_hub import snapshot_download
-          model_id = os.environ["HF_MODEL_ID"]
-          local_dir = os.environ["MODEL_DIR"]
-          token = os.getenv("HF_TOKEN") or None
           snapshot_download(
-              repo_id=model_id,
-              local_dir=local_dir,
-              token=token,
+              repo_id=os.environ["HF_MODEL_ID"],
+              local_dir=os.environ["MODEL_DIR"],
+              token=os.getenv("HF_TOKEN") or None,
               ignore_patterns=["*.msgpack", "*.h5", "*.bin"]
           )
           PYCODE
 
       - name: Convert HF model to GGUF (F16)
         run: |
-          export PYTHONPATH="${{ env.LOCAL_PIPS }}"
+          # Используем свежий конвертер
           python3 llama.cpp/convert_hf_to_gguf.py \
             "${MODEL_DIR}" \
             --outfile "models/${GGUF_OUT_BASE}-F16.gguf" \
@@ -93,9 +88,6 @@ jobs:
 
       - name: Cleanup F16
         run: rm "models/${GGUF_OUT_BASE}-F16.gguf"
-
-      - name: List resulting files
-        run: ls -lh models
 
       - name: Upload quantized GGUF as artifact
         uses: actions/upload-artifact@v4
