@@ -1,0 +1,104 @@
+name: Build Qwen3.5-9B GGUF
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - ".github/workflows/qwen-gguf.yml"
+
+jobs:
+  build-gguf:
+    runs-on: ubuntu-latest
+
+    env:
+      HF_MODEL_ID: "huihui-ai/Huihui-Qwen3.5-9B-Claude-4.6-Opus-abliterated"
+      MODEL_DIR: "models/Qwen3.5-9B-Abliterated"
+      GGUF_OUT_BASE: "Qwen3.5-9B-Abliterated"
+      QUANT_TYPE: "Q4_K_M"
+
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Maximize build space
+        uses: easimon/maximize-build-space@v10
+        with:
+          root-reserve-mb: 2048
+          swap-size-mb: 1024
+          remove-dotnet: 'true'
+          remove-android: 'true'
+          remove-haskell: 'true'
+          remove-codeql: 'true'
+          remove-docker-images: 'true'
+
+      - name: Install system deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git build-essential cmake python3 python3-pip
+
+      - name: Clone and build llama.cpp
+        run: |
+          git clone --depth 1 https://github.com/ggml-org/llama.cpp.git
+          cmake -S llama.cpp -B llama.cpp/build \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DBUILD_SHARED_LIBS=OFF \
+            -DLLAMA_BUILD_TESTS=OFF \
+            -DLLAMA_BUILD_EXAMPLES=OFF \
+            -DLLAMA_BUILD_SERVER=OFF \
+            -DLLAMA_BUILD_TOOLS=ON
+          cmake --build llama.cpp/build --config Release -j"$(nproc)"
+
+      - name: Create models dir
+        run: mkdir -p models
+
+      - name: Install Python deps
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r llama.cpp/requirements.txt
+          python3 -m pip install "huggingface_hub>=0.25.0"
+
+      - name: Download Model from Hugging Face
+        env:
+          HF_TOKEN: ${{ secrets.HF_TOKEN }}
+        run: |
+          python3 - <<'PYCODE'
+          import os
+          from huggingface_hub import snapshot_download
+
+          model_id = os.environ["HF_MODEL_ID"]
+          local_dir = os.environ["MODEL_DIR"]
+          token = os.getenv("HF_TOKEN") or None
+
+          snapshot_download(
+              repo_id=model_id,
+              local_dir=local_dir,
+              token=token,
+              ignore_patterns=["*.msgpack", "*.h5", "*.bin"] 
+          )
+          PYCODE
+
+      - name: Convert HF model to GGUF (F16)
+        run: |
+          python3 llama.cpp/convert_hf_to_gguf.py \
+            "${MODEL_DIR}" \
+            --outfile "models/${GGUF_OUT_BASE}-F16.gguf" \
+            --outtype f16
+
+      - name: Quantize to ${{ env.QUANT_TYPE }}
+        run: |
+          llama.cpp/build/bin/llama-quantize \
+            "models/${GGUF_OUT_BASE}-F16.gguf" \
+            "models/${GGUF_OUT_BASE}-${QUANT_TYPE}.gguf" \
+            "${QUANT_TYPE}"
+
+      - name: Cleanup F16
+        run: rm "models/${GGUF_OUT_BASE}-F16.gguf"
+
+      - name: List resulting files
+        run: ls -lh models
+
+      - name: Upload quantized GGUF as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.GGUF_OUT_BASE }}-${{ env.QUANT_TYPE }}-GGUF
+          path: models/*.gguf
