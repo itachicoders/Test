@@ -23,7 +23,7 @@ jobs:
       - name: Maximize build space
         uses: easimon/maximize-build-space@v10
         with:
-          root-reserve-mb: 2048
+          root-reserve-mb: 512
           swap-size-mb: 1024
           remove-dotnet: 'true'
           remove-android: 'true'
@@ -53,7 +53,10 @@ jobs:
 
       - name: Install Python deps
         run: |
+          mkdir -p models/pip_tmp
+          export TMPDIR="${{ github.workspace }}/models/pip_tmp"
           python3 -m pip install --upgrade pip
+          python3 -m pip install torch --index-url https://download.pytorch.org/whl/cpu
           python3 -m pip install -r llama.cpp/requirements.txt
           python3 -m pip install "huggingface_hub>=0.25.0"
 
@@ -64,16 +67,14 @@ jobs:
           python3 - <<'PYCODE'
           import os
           from huggingface_hub import snapshot_download
-
           model_id = os.environ["HF_MODEL_ID"]
           local_dir = os.environ["MODEL_DIR"]
           token = os.getenv("HF_TOKEN") or None
-
           snapshot_download(
               repo_id=model_id,
               local_dir=local_dir,
               token=token,
-              ignore_patterns=["*.msgpack", "*.h5", "*.bin"] 
+              ignore_patterns=["*.msgpack", "*.h5", "*.bin"]
           )
           PYCODE
 
@@ -102,3 +103,4 @@ jobs:
         with:
           name: ${{ env.GGUF_OUT_BASE }}-${{ env.QUANT_TYPE }}-GGUF
           path: models/*.gguf
+
