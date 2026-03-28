@@ -14,7 +14,7 @@ jobs:
       HF_MODEL_ID: "HuggingFaceTB/SmolLM3-3B"
       MODEL_DIR: "models/SmolLM3-3B"
       GGUF_OUT_BASE: "SmolLM3-3B"
-      QUANT_TYPE: "Q3_K_M"
+      QUANT_TYPE: "Q4_K_M"
 
     steps:
       - name: Checkout repo
