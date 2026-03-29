@@ -1,4 +1,4 @@
-name: Build Qwen3.5-9B GGUF
+name: Build Qwen3.5-4B GGUF
 
 on:
   workflow_dispatch:
@@ -8,9 +8,9 @@ jobs:
     runs-on: ubuntu-latest
 
     env:
-      HF_MODEL_ID: "huihui-ai/Huihui-Qwen3.5-9B-Claude-4.6-Opus-abliterated"
-      MODEL_DIR: "models/Qwen3.5-9B-Abliterated"
-      GGUF_OUT_BASE: "Qwen3.5-9B-Abliterated"
+      HF_MODEL_ID: "huihui-ai/Huihui-Qwen3.5-4B-Claude-4.6-Opus-abliterated"
+      MODEL_DIR: "models/Qwen3.5-4B-Abliterated"
+      GGUF_OUT_BASE: "Qwen3.5-4B-Abliterated"
       QUANT_TYPE: "Q4_K_M"
 
     steps:
