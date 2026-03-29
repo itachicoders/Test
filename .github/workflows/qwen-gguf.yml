@@ -1,4 +1,4 @@
-name: Build Qwen3.5-4B-Vision GGUF
+name: Build Qwen3.5-4B GGUF
 
 on:
   workflow_dispatch:
@@ -35,23 +35,68 @@ jobs:
         run: |
           python3 -m venv models/venv
           source models/venv/bin/activate
-          python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
-          # Ставим последние версии для поддержки Qwen2-VL
-          python3 -m pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
-          python3 -m pip install --no-cache-dir transformers>=4.45.0 tokenizers>=0.20.0 huggingface_hub gguf
-          python3 -m pip install --no-cache-dir -r llama.cpp/requirements.txt
 
-      - name: Download Model
+          python3 -m pip install --no-cache-dir --upgrade pip setuptools wheel
+          python3 -m pip install --no-cache-dir torch --index-url https://download.pytorch.org/whl/cpu
+
+          # Не ставим llama.cpp/requirements.txt:
+          # он тянет transformers<5.0.0 и может откатить поддержку Qwen3.5 tokenizer.
+          python3 -m pip install --no-cache-dir \
+            "numpy~=1.26.4" \
+            "sentencepiece>=0.1.98,<0.3.0" \
+            "protobuf>=4.21.0,<5.0.0" \
+            "safetensors>=0.4.3" \
+            "gguf>=0.1.0" \
+            "huggingface_hub>=0.30.0" \
+            "tokenizers>=0.22.0"
+
+          # Самый свежий transformers, чтобы qwen3_5 и tokenizer_class корректно распознавались.
+          python3 -m pip install --no-cache-dir \
+            "git+https://github.com/huggingface/transformers.git"
+
+          python3 - <<'PY'
+          import transformers, tokenizers
+          print("transformers =", transformers.__version__)
+          print("tokenizers   =", tokenizers.__version__)
+          PY
+
+      - name: Download model
         env:
           HF_TOKEN: ${{ secrets.HF_TOKEN }}
         run: |
           source models/venv/bin/activate
-          python3 -c "from huggingface_hub import snapshot_download; import os; snapshot_download(repo_id=os.environ['HF_MODEL_ID'], local_dir=os.environ['MODEL_DIR'], token=os.getenv('HF_TOKEN'), ignore_patterns=['*.msgpack', '*.h5', '*.bin'])"
+          python3 - <<'PY'
+          import os
+          from huggingface_hub import snapshot_download
 
-      - name: Convert Vision Model to GGUF
+          snapshot_download(
+              repo_id=os.environ["HF_MODEL_ID"],
+              local_dir=os.environ["MODEL_DIR"],
+              token=os.getenv("HF_TOKEN"),
+              ignore_patterns=["*.msgpack", "*.h5", "*.bin"],
+          )
+          PY
+
+      - name: Sanity check tokenizer loading
         run: |
           source models/venv/bin/activate
-          # Для Qwen2-VL используем специальный конвертер
+          python3 - <<'PY'
+          import os
+          from transformers import AutoConfig, AutoTokenizer
+
+          model_dir = os.environ["MODEL_DIR"]
+
+          cfg = AutoConfig.from_pretrained(model_dir, trust_remote_code=True)
+          print("config class:", cfg.__class__.__name__)
+
+          tok = AutoTokenizer.from_pretrained(model_dir, trust_remote_code=True)
+          print("tokenizer class:", tok.__class__.__name__)
+          print("vocab size:", tok.vocab_size)
+          PY
+
+      - name: Convert model to GGUF (F16)
+        run: |
+          source models/venv/bin/activate
           python3 llama.cpp/convert_hf_to_gguf.py \
             "${MODEL_DIR}" \
             --outfile "models/${GGUF_OUT_BASE}-F16.gguf" \
@@ -64,7 +109,7 @@ jobs:
             "models/${GGUF_OUT_BASE}-${QUANT_TYPE}.gguf" \
             "${QUANT_TYPE}"
 
-      - name: Upload Artifacts
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
           name: ${{ env.GGUF_OUT_BASE }}-GGUF
